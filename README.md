@@ -1,4 +1,4 @@
-# githubaction-trivy-sonarqube-docker-argocd-kubernetes
+# Devops mini projet
 
 
 ![image](https://github.com/user-attachments/assets/e07ce44f-7406-4c4e-9392-a475ae6c7940)
@@ -95,6 +95,3 @@ then add argocd application on github and see how to work
 
 <img width="753" alt="image" src="https://github.com/alperen-selcuk/githubaction-docker-argocd-kubernetes/assets/78741582/7bf8582a-601c-40e4-9f00-e6e979834bef">
 
-
-.
-# devops-mp
