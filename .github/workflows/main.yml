@@ -1,0 +1,165 @@
+name: DevSecOps
+
+on:
+  push:
+    branches: [ "main" ]
+    paths-ignore:
+      - '**/*.yaml'
+      - '**/*.md'
+      - '**/*.yml'
+  workflow_dispatch:
+    inputs: 
+      branch_name: 
+        required: true
+        default: "main"
+
+permissions:
+  security-events: write
+
+env:
+  REGISTRY: hasanalperen
+  APP: githubaction
+
+jobs:
+
+  kubelint:
+    name: kubernetes-lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Install kubeval
+        run: |
+          wget https://github.com/instrumenta/kubeval/releases/download/v0.16.1/kubeval-linux-amd64.tar.gz
+          tar -xzf kubeval-linux-amd64.tar.gz
+          sudo mv kubeval /usr/local/bin/kubeval
+      - name: Validate Kubernetes manifests
+        run: |
+          kubeval ./manifests/*.yaml | tee kubeval-output.log
+      - name: Upload kubeval log
+        uses: actions/upload-artifact@v3
+        with:
+          name: kubeval-log
+          path: ./kubeval-output.log
+  
+  dockerfilelint:
+    name: dockerfile-linter
+    runs-on: builder
+    steps:
+      - name: check repository
+        uses: actions/checkout@v4
+      - name: Lint Dockerfile with Hadolint
+        run: |
+          docker run --rm -i hadolint/hadolint < ./app/Dockerfile | tee hadolint-output.log
+      - name: Upload Hadolint log
+        uses: actions/upload-artifact@v3
+        with:
+          name: hadolint-log
+          path: ./hadolint-output.log
+      - name: Download Hadolint log
+        uses: actions/download-artifact@v3
+        with:
+          name: hadolint-log         
+
+  file_scan:
+    name: trivy-file-scan
+    runs-on: builder
+    steps:
+      - name: check repository
+        uses: actions/checkout@v4
+      - name: Set up Trivy
+        uses: aquasecurity/trivy-action@0.23.0
+        with:
+          scan-type: 'fs'
+          ignore-unfixed: true
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL'
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-results.sarif'
+          
+  sonarqube_scan:
+    name: sonarqube-code-quality
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with: 
+          fetch-depth: 0
+      - name: SonarQube Scanner
+        uses: sonarsource/sonarqube-scan-action@master
+        env:
+          SONAR_TOKEN: ${{ secrets.SONARQUBE_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        
+      - name: SonarQube Quality Gate check
+        uses: sonarsource/sonarqube-quality-gate-action@master
+        id: sonarqube-quality-gate-check
+        env:
+          SONAR_TOKEN: ${{ secrets.SONARQUBE_TOKEN }}
+        timeout-minutes: 5
+  
+      - name: "Example show SonarQube Quality Gate Status value"
+        run: echo "The Quality Gate status is ${{ steps.sonarqube-quality-gate-check.outputs.quality-gate-status }}"
+  
+  docker_build_and_push:
+    name: docker-build-push
+    runs-on: builder
+    needs: ['file_scan' ,'sonarqube_scan', 'dockerfilelint', 'kubelint']
+    steps:
+      - name: check repository
+        uses: actions/checkout@v4
+
+      - name: login to docker registry
+        uses: docker/login-action@v3
+        with:
+          username: ${{secrets.DOCKERHUB_USERNAME}}
+          password: ${{secrets.DOCKERHUB_TOKEN}}
+
+      - name: build and push docker image to registry
+        uses: docker/build-push-action@v5
+        with:
+          context: app/
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.APP }}:${{ github.run_id }}
+  
+  image_scane:
+    name: trivy-docker-image-scan
+    runs-on: builder
+    needs: ['docker_build_and_push']
+    steps:
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@0.23.0
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.APP }}:${{ github.run_id }}
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+  
+  manifest_update:
+    name: argocd-kubernetes-deployment
+    runs-on: builder
+    needs: ['docker_build_and_push', 'image_scane']
+    steps: 
+      - name: check repository
+        uses: actions/checkout@v4
+        with: 
+          repository: alperen-selcuk/githubaction-docker-argocd-kubernetes
+          ref: main
+          token: ${{ secrets.GIT_TOKEN }}
+      - name: git_config
+        run: |
+          git config --global user.email "alperenhasanselcuk@gmail.com"
+          git config --global user.name "alperen-selcuk"
+          sed -i 's|hasanalperen/githubaction:.*|hasanalperen/githubaction:'"${GITHUB_RUN_ID}"'|' manifests/deployment.yaml
+          cat manifests/deployment.yaml
+          git add manifests/deployment.yaml
+          git commit -m "update manifest"
+          git push origin main
+        
+      
+  
