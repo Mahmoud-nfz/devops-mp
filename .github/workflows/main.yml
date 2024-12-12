@@ -102,7 +102,6 @@ jobs:
   
   docker_build_and_push:
     name: docker-build-push
-    runs-on: builder
     # needs: ['file_scan' ,'sonarqube_scan', 'dockerfilelint', 'kubelint']
     steps:
       - name: check repository
